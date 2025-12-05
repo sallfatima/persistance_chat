@@ -42,14 +42,15 @@ async def check_backend_health() -> dict:
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
-async def get_active_sessions(user_id: str) -> dict:
-    """Récupérer les sessions actives d'un utilisateur"""
+async def get_recent_sessions(user_id: str) -> dict:
+    """Récupérer les sessions récentes (running + completed)"""
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(f"{BACKEND_URL}/api/sessions/{user_id}/active")
-            return response.json()
-    except Exception as e:
-        return {"active_tasks": [], "count": 0}
+            resp = await client.get(f"{BACKEND_URL}/api/sessions/{user_id}/recent?hours=24")
+            return resp.json()
+    except Exception:
+        return {"tasks": [], "count": 0}
+
 
 async def create_task(prompt: str, provider: str, model: str, temperature: float, user_id: str) -> dict:
     """Créer une tâche de génération"""
@@ -126,28 +127,19 @@ async def stream_from_backend(task_id: str, msg: cl.Message, start_from_chunk: i
 # ==================== RECONNEXION ====================
 
 async def check_and_reconnect():
-    """
-    Vérifier s'il y a des sessions actives et proposer reconnexion
-    """
-    
-    # Récupérer user_id de la session Chainlit
     user_id = cl.user_session.get("user_id")
-    
     if not user_id:
-        # Premier lancement, générer user_id
         user_id = str(uuid.uuid4())
         cl.user_session.set("user_id", user_id)
         return None
-    
-    # Vérifier sessions actives
-    sessions = await get_active_sessions(user_id)
-    active_tasks = sessions.get("active_tasks", [])
-    
-    if not active_tasks:
+
+    sessions = await get_recent_sessions(user_id)
+    tasks = sessions.get("tasks", [])
+    if not tasks:
         return None
-    
-    # Il y a des sessions actives
-    return active_tasks
+
+    return tasks
+
 
 async def reconnect_to_task(task_info: dict):
     """Reconnexion à une tâche active"""
