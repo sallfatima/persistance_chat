@@ -11,7 +11,7 @@ from anthropic import AsyncAnthropic
 import redis.asyncio as redis
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
-from sqlalchemy import Column, String, Integer, Text, DateTime, Float
+from sqlalchemy import Column, String, Integer, Text, DateTime, Float, select, text  
 import os
 import json
 import uuid
@@ -173,17 +173,46 @@ async def update_task_status(task_id: str, status: str, error: str = None):
     """Mettre à jour status de tâche"""
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            f"SELECT * FROM chat_tasks WHERE id = '{task_id}'"
+            text("SELECT * FROM chat_tasks WHERE id = :task_id"),
+            {"task_id": task_id}
         )
+        
         task = result.first()
         
         if task:
-            await session.execute(
-                f"UPDATE chat_tasks SET status = '{status}', "
-                f"completed_at = '{datetime.utcnow().isoformat()}' "
-                f"{f', error = \\'{error}\\'' if error else ''} "
-                f"WHERE id = '{task_id}'"
-            )
+            error_part = f", error = '{error}'" if error else ""
+            if error:
+                await session.execute(
+                    text("""
+                        UPDATE chat_tasks 
+                        SET status = :status, 
+                            completed_at = :completed_at,
+                            error = :error
+                        WHERE id = :task_id
+                    """),
+                    {
+                        "status": status,
+                        "completed_at": datetime.utcnow().isoformat(),
+                        "error": error,
+                        "task_id": task_id
+                    }
+                )
+            else:
+                await session.execute(
+                    text("""
+                        UPDATE chat_tasks 
+                        SET status = :status, 
+                            completed_at = :completed_at
+                        WHERE id = :task_id
+                    """),
+                    {
+                        "status": status,
+                        "completed_at": datetime.utcnow().isoformat(),
+                        "task_id": task_id
+                    }
+                )
+            
+
             await session.commit()
 
 async def save_chunk_to_db(
@@ -209,10 +238,14 @@ async def get_chunks_from_db(task_id: str, from_id: int = 0) -> List[dict]:
     """Récupérer chunks depuis PostgreSQL"""
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            f"SELECT * FROM chat_chunks "
-            f"WHERE task_id = '{task_id}' AND chunk_id >= {from_id} "
-            f"ORDER BY chunk_id"
+            text("""
+                SELECT * FROM chat_chunks 
+                WHERE task_id = :task_id AND chunk_id >= :from_id 
+                ORDER BY chunk_id
+            """),
+            {"task_id": task_id, "from_id": from_id}
         )
+        
         rows = result.fetchall()
         
         return [
@@ -230,11 +263,15 @@ async def save_full_response_to_db(task_id: str, full_response: str):
     """Sauvegarder réponse complète"""
     async with AsyncSessionLocal() as session:
         await session.execute(
-            f"UPDATE chat_tasks SET full_response = '{full_response}' "
-            f"WHERE id = '{task_id}'"
+            text("""
+                UPDATE chat_tasks 
+                SET full_response = :full_response 
+                WHERE id = :task_id
+            """),
+            {"full_response": full_response, "task_id": task_id}
         )
+        
         await session.commit()
-
 # ==================== LLM STREAMING ====================
 
 async def stream_openai(
@@ -281,7 +318,7 @@ async def stream_openai(
     # Sauvegarder réponse complète
     await save_full_response_to_db(task_id, full_response)
     
-    return full_response
+   
 
 async def stream_anthropic(
     prompt: str,
@@ -323,7 +360,7 @@ async def stream_anthropic(
     # Sauvegarder réponse complète
     await save_full_response_to_db(task_id, full_response)
     
-    return full_response
+
 
 # ==================== ENDPOINTS ====================
 
@@ -351,11 +388,12 @@ async def health():
     # Test PostgreSQL
     postgres_ok = False
     try:
+        from sqlalchemy import text
         async with AsyncSessionLocal() as session:
-            await session.execute("SELECT 1")
+            await session.execute(text("SELECT 1"))
         postgres_ok = True
-    except:
-        pass
+    except Exception as e:
+        print(f"PostgreSQL health check error: {e}")
     
     return {
         "status": "healthy" if (redis_ok and postgres_ok) else "degraded",
@@ -364,7 +402,6 @@ async def health():
         "redis_connected": redis_ok,
         "postgres_connected": postgres_ok
     }
-
 @app.post("/api/chat/generate", response_model=TaskResponse)
 async def create_chat_task(request: ChatRequest):
     """
@@ -498,8 +535,10 @@ async def get_task_status(task_id: str):
     
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            f"SELECT * FROM chat_tasks WHERE id = '{task_id}'"
+            text("SELECT * FROM chat_tasks WHERE id = :task_id"),
+            {"task_id": task_id}
         )
+        
         row = result.first()
         
         if not row:
@@ -533,15 +572,18 @@ async def get_stats():
     
     async with AsyncSessionLocal() as session:
         # Total tasks
-        result = await session.execute("SELECT COUNT(*) FROM chat_tasks")
+        result = await session.execute(text("SELECT COUNT(*) FROM chat_tasks"))
         total_tasks = result.scalar()
         
         # Cached tasks
-        result = await session.execute("SELECT COUNT(*) FROM chat_tasks WHERE cached = 1")
+       
+        result = await session.execute(
+            text("SELECT COUNT(*) FROM chat_tasks WHERE cached = 1")
+        )
         cached_tasks = result.scalar()
         
         # Total chunks
-        result = await session.execute("SELECT COUNT(*) FROM chat_chunks")
+        result = await session.execute(text("SELECT COUNT(*) FROM chat_chunks"))
         total_chunks = result.scalar()
         
         return {

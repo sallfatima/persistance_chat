@@ -34,12 +34,13 @@ services:
     platform: linux/arm64
     container_name: mvp-frontend
     environment:
-      - BACKEND_URL=http://backend:8000
+      - BACKEND_URL=http://localhost:8000
+
     depends_on:
       backend:
         condition: service_healthy
     ports:
-      - "8501:8000"
+      - "8503:8501"
     networks:
       - chatbot-network
 

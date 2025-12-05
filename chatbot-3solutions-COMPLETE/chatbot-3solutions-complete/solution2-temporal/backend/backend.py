@@ -37,6 +37,10 @@ TASK_QUEUE = os.getenv("TASK_QUEUE", "chatbot-task-queue")
 # Client Temporal (initialisé au startup)
 temporal_client: Optional[Client] = None
 
+# ✅ FIX: Define workflow names as constants instead of importing
+CHAT_STREAMING_WORKFLOW = "ChatStreamingWorkflow"
+BATCH_CHAT_WORKFLOW = "BatchChatWorkflow"
+
 # ==================== MODELS ====================
 
 class ChatRequest(BaseModel):
@@ -110,12 +114,10 @@ async def start_workflow(request: ChatRequest):
     workflow_id = f"chat-{uuid.uuid4()}"
     
     try:
-        # Import workflow (avec imports_passed_through)
-        from workflows import ChatStreamingWorkflow
-        
+        # ✅ FIX: Use workflow name string instead of importing
         # Démarrer workflow
         handle = await temporal_client.start_workflow(
-            ChatStreamingWorkflow.run,
+            CHAT_STREAMING_WORKFLOW,
             args=[request.prompt, request.provider, request.model, request.temperature],
             id=workflow_id,
             task_queue=TASK_QUEUE,
@@ -147,9 +149,9 @@ async def get_workflow_status(workflow_id: str):
         # Récupérer handle du workflow
         handle = temporal_client.get_workflow_handle(workflow_id)
         
+        # ✅ FIX: Query using string name instead of class reference
         # Query le workflow (non-bloquant)
-        from workflows import ChatStreamingWorkflow
-        status = await handle.query(ChatStreamingWorkflow.get_status)
+        status = await handle.query("get_status")
         
         return status
     
@@ -170,8 +172,8 @@ async def get_workflow_chunks(workflow_id: str):
     try:
         handle = temporal_client.get_workflow_handle(workflow_id)
         
-        from workflows import ChatStreamingWorkflow
-        chunks = await handle.query(ChatStreamingWorkflow.get_chunks)
+        # ✅ FIX: Query using string name instead of class reference
+        chunks = await handle.query("get_chunks")
         
         return {
             "workflow_id": workflow_id,
@@ -218,8 +220,8 @@ async def cancel_workflow(workflow_id: str):
     try:
         handle = temporal_client.get_workflow_handle(workflow_id)
         
-        from workflows import ChatStreamingWorkflow
-        await handle.signal(ChatStreamingWorkflow.cancel)
+        # ✅ FIX: Signal using string name instead of class reference
+        await handle.signal("cancel")
         
         return {"message": f"Cancel signal sent to workflow {workflow_id}"}
     
@@ -240,10 +242,9 @@ async def start_batch_workflow(request: BatchChatRequest):
     workflow_id = f"batch-{uuid.uuid4()}"
     
     try:
-        from workflows import BatchChatWorkflow
-        
+        # ✅ FIX: Use workflow name string instead of importing
         handle = await temporal_client.start_workflow(
-            BatchChatWorkflow.run,
+            BATCH_CHAT_WORKFLOW,
             args=[request.prompts, request.provider, request.model],
             id=workflow_id,
             task_queue=TASK_QUEUE,

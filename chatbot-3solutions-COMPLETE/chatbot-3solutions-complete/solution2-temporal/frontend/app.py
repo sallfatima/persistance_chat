@@ -273,6 +273,9 @@ async def main(message: cl.Message):
     # Message de réponse
     msg = cl.Message(content="")
     
+    # ✅ FIX: Initialize workflow_id to None
+    workflow_id = None
+    
     try:
         # Afficher info provider
         provider_name = "OpenAI GPT" if provider == "openai" else "Anthropic Claude"
@@ -303,13 +306,16 @@ async def main(message: cl.Message):
     # Envoyer
     await msg.send()
     
-    # Metadata
+    # ✅ FIX: Only set workflow_id if it exists
     msg.metadata = {
         "provider": provider,
         "model": model,
-        "temperature": temperature,
-        "workflow_id": workflow_id
+        "temperature": temperature
     }
+    
+    if workflow_id:
+        msg.metadata["workflow_id"] = workflow_id
+    
     await msg.update()
 
 # ==================== PROFILS DE CHAT ====================
