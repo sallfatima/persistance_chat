@@ -18,13 +18,10 @@ services:
       - backend-storage:/app/storage
     ports:
       - "8000:8000"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+    # ← SUPPRIMEZ LA SECTION HEALTHCHECK ICI
     networks:
       - chatbot-network
+    restart: unless-stopped
 
   # Frontend Chainlit
   frontend:
@@ -34,15 +31,17 @@ services:
     platform: linux/arm64
     container_name: mvp-frontend
     environment:
-      - BACKEND_URL=http://localhost:8000
-
+      - BACKEND_URL=http://backend:8000
     depends_on:
-      backend:
-        condition: service_healthy
+      - backend  # ← SIMPLIFIEZ ICI (sans condition)
     ports:
-      - "8503:8501"
+      - "8501:8000"
     networks:
       - chatbot-network
+    restart: unless-stopped
+    # Délai pour laisser le backend démarrer
+    command: >
+      sh -c "sleep 3 && chainlit run app.py --host 0.0.0.0 --port 8000"
 
 volumes:
   backend-storage:

@@ -1,6 +1,6 @@
 """
-Frontend Chainlit avec Reconnexion Automatique
-Détecte et reprend les sessions actives après F5
+Frontend Chainlit avec Reconnexion AUTOMATIQUE
+Reprend directement la session active sans demander
 """
 
 import chainlit as cl
@@ -10,24 +10,23 @@ import os
 from typing import Optional, List
 from datetime import datetime
 import uuid
-from chainlit.server import app
-from fastapi import Response
-
+import json
+import hashlib
 
 # ==================== CONFIGURATION ====================
 
-BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
+BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
 
-# Modèles disponibles
+# user_id STABLE basé sur un identifiant fixe
+STABLE_USER_ID = hashlib.md5("my-stable-user-id".encode()).hexdigest()
+
 OPENAI_MODELS = {
     "gpt-4o": "GPT-4o (Recommandé)",
-    "gpt-4o-mini": "GPT-4o Mini (Économique)",
-    "gpt-4-turbo": "GPT-4 Turbo"
+    "gpt-4o-mini": "GPT-4o Mini (Économique)"
 }
 
 ANTHROPIC_MODELS = {
     "claude-3-5-sonnet-20241022": "Claude 3.5 Sonnet (Recommandé)",
-    "claude-3-opus-20240229": "Claude 3 Opus",
     "claude-3-haiku-20240307": "Claude 3 Haiku"
 }
 
@@ -42,15 +41,15 @@ async def check_backend_health() -> dict:
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
-async def get_recent_sessions(user_id: str) -> dict:
-    """Récupérer les sessions récentes (running + completed)"""
+async def get_active_sessions(user_id: str) -> dict:
+    """Récupérer les sessions actives d'un utilisateur"""
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{BACKEND_URL}/api/sessions/{user_id}/recent?hours=24")
-            return resp.json()
-    except Exception:
-        return {"tasks": [], "count": 0}
-
+            url = f"{BACKEND_URL}/api/sessions/{user_id}/active"
+            response = await client.get(url)
+            return response.json()
+    except Exception as e:
+        return {"active_tasks": [], "count": 0}
 
 async def create_task(prompt: str, provider: str, model: str, temperature: float, user_id: str) -> dict:
     """Créer une tâche de génération"""
@@ -84,22 +83,15 @@ async def stream_from_backend(task_id: str, msg: cl.Message, start_from_chunk: i
     
     last_chunk_id = start_from_chunk
     start_time = datetime.now()
-    is_reconnection = start_from_chunk > 0
-    
-    if is_reconnection:
-        await msg.stream_token(f"\n🔄 Reprise depuis le chunk #{start_from_chunk}...\n\n")
     
     while True:
         try:
-            # Récupérer nouveaux chunks
             chunks_data = await get_chunks(task_id, last_chunk_id)
             
-            # Afficher chunks
             for chunk in chunks_data["chunks"]:
                 await msg.stream_token(chunk["text"])
                 last_chunk_id = chunk["chunk_id"] + 1
             
-            # Check status
             status = await get_task_status(task_id)
             
             if status.get("status") == "completed":
@@ -108,9 +100,6 @@ async def stream_from_backend(task_id: str, msg: cl.Message, start_from_chunk: i
                 await msg.stream_token("\n\n---\n\n")
                 await msg.stream_token(f"✅ Terminé en {elapsed:.2f}s\n")
                 await msg.stream_token(f"📊 Total chunks: {last_chunk_id}\n")
-                
-                if is_reconnection:
-                    await msg.stream_token(f"🔄 Session reprise avec succès !\n")
                 
                 break
             
@@ -124,54 +113,59 @@ async def stream_from_backend(task_id: str, msg: cl.Message, start_from_chunk: i
             await msg.stream_token(f"\n\n❌ Erreur: {str(e)}")
             break
 
-# ==================== RECONNEXION ====================
+# ==================== RECONNEXION AUTOMATIQUE ====================
 
-async def check_and_reconnect():
-    user_id = cl.user_session.get("user_id")
-    if not user_id:
-        user_id = str(uuid.uuid4())
-        cl.user_session.set("user_id", user_id)
-        return None
-
-    sessions = await get_recent_sessions(user_id)
-    tasks = sessions.get("tasks", [])
-    if not tasks:
-        return None
-
-    return tasks
-
-
-async def reconnect_to_task(task_info: dict):
-    """Reconnexion à une tâche active"""
+async def auto_reconnect_if_needed():
+    """Vérifier et reprendre automatiquement une session active"""
     
+    user_id = STABLE_USER_ID
+    cl.user_session.set("user_id", user_id)
+    
+    sessions = await get_active_sessions(user_id)
+    active_tasks = sessions.get("active_tasks", [])
+    
+    if not active_tasks:
+        return False  # Pas de session active
+    
+    # Reprendre la session la plus récente AUTOMATIQUEMENT
+    task_info = active_tasks[0]
     task_id = task_info["task_id"]
     prompt = task_info["prompt"]
     chunks_count = task_info["chunks_count"]
+    status = task_info["status"]
     
     # Message de reconnexion
     reconnect_msg = cl.Message(content="")
     
-    await reconnect_msg.stream_token(f"# 🔄 Reconnexion à votre session\n\n")
-    await reconnect_msg.stream_token(f"**Prompt**: {prompt}...\n\n")
-    await reconnect_msg.stream_token(f"**Progression**: {chunks_count} chunks déjà générés\n\n")
+    await reconnect_msg.stream_token(f"# 🔄 Reconnexion Automatique\n\n")
+    await reconnect_msg.stream_token(f"📋 **Session reprise**: {prompt[:80]}...\n\n")
+    await reconnect_msg.stream_token(f"✅ **Progression**: {chunks_count} chunks déjà générés\n")
+    await reconnect_msg.stream_token(f"⚡ **Status**: {status}\n\n")
     await reconnect_msg.stream_token("---\n\n")
     
-    # Replay chunks existants
+    # Replay des chunks existants
     chunks_data = await get_chunks(task_id, 0)
     
     for chunk in chunks_data["chunks"]:
         await reconnect_msg.stream_token(chunk["text"])
     
-    # Continuer le streaming
-    await stream_from_backend(task_id, reconnect_msg, chunks_count)
+    # Si la génération est terminée
+    if status == "completed":
+        await reconnect_msg.stream_token("\n\n---\n\n")
+        await reconnect_msg.stream_token("✅ **Génération complétée**\n")
+        await reconnect_msg.send()
+    else:
+        # Continuer le streaming en direct
+        await stream_from_backend(task_id, reconnect_msg, chunks_count)
+        await reconnect_msg.send()
     
-    await reconnect_msg.send()
+    return True  # Session reprise
 
 # ==================== CHAINLIT HANDLERS ====================
 
 @cl.on_chat_start
 async def start():
-    """Initialisation avec détection de sessions actives"""
+    """Initialisation avec reconnexion automatique"""
     
     # Vérifier backend
     health = await check_backend_health()
@@ -184,90 +178,31 @@ async def start():
         ).send()
         return
     
-    # Récupérer ou créer user_id
-    user_id = cl.user_session.get("user_id")
-    if not user_id:
-        user_id = str(uuid.uuid4())
-        cl.user_session.set("user_id", user_id)
+    # Utiliser user_id STABLE
+    user_id = STABLE_USER_ID
+    cl.user_session.set("user_id", user_id)
     
-    # Vérifier sessions actives
-    active_tasks = await check_and_reconnect()
+    # Tentative de reconnexion automatique
+    reconnected = await auto_reconnect_if_needed()
     
-    if active_tasks:
-        # Il y a des sessions actives - proposer reconnexion
-        msg_content = "# 🔄 Sessions Actives Détectées\n\n"
-        msg_content += f"Vous avez **{len(active_tasks)}** génération(s) en cours:\n\n"
-        
-        for i, task in enumerate(active_tasks, 1):
-            msg_content += f"**{i}.** {task['prompt'][:80]}...\n"
-            msg_content += f"   • Progression: {task['chunks_count']} chunks\n"
-            msg_content += f"   • Status: {task['status']}\n\n"
-        
-        msg_content += "💡 Voulez-vous reprendre la dernière session ?"
-        
-        # Actions pour choisir
-        actions = [
-            cl.Action(
-                name="reconnect",
-                value=active_tasks[0]["task_id"],  # Plus récent
-                label="🔄 Reprendre",
-                description="Reprendre la session la plus récente"
-            ),
-            cl.Action(
-                name="new_chat",
-                value="new",
-                label="🆕 Nouveau",
-                description="Commencer une nouvelle conversation"
-            )
-        ]
-        
-        await cl.Message(
-            content=msg_content,
-            actions=actions
-        ).send()
-        
-        # Sauvegarder les tâches actives pour les actions
-        cl.user_session.set("pending_reconnect", active_tasks)
-        
+    if reconnected:
+        # Session reprise avec succès, on s'arrête ici
+        # L'utilisateur peut envoyer un nouveau message s'il veut
+        pass
     else:
-        # Pas de sessions actives - démarrage normal
+        # Pas de session active, afficher le message de bienvenue
         await show_welcome_message(health)
     
-    # Créer settings
+    # Créer les paramètres de chat
     await create_chat_settings()
-
-@cl.action_callback("reconnect")
-async def on_reconnect(action: cl.Action):
-    """Action: Reprendre une session"""
-    
-    task_id = action.value
-    active_tasks = cl.user_session.get("pending_reconnect", [])
-    
-    # Trouver la tâche
-    task_info = next((t for t in active_tasks if t["task_id"] == task_id), None)
-    
-    if task_info:
-        await reconnect_to_task(task_info)
-    else:
-        await cl.Message(content="❌ Session introuvable").send()
-
-@cl.action_callback("new_chat")
-async def on_new_chat(action: cl.Action):
-    """Action: Nouveau chat"""
-    
-    await cl.Message(content="✨ Nouvelle conversation démarrée !").send()
-    
-    # Afficher message de bienvenue
-    health = await check_backend_health()
-    await show_welcome_message(health)
 
 async def show_welcome_message(health: dict):
     """Afficher le message de bienvenue"""
     
     welcome_msg = "# 🤖 Chatbot LLM avec Reconnexion Auto\n\n"
-    welcome_msg += "## ✨ Nouvelle Fonctionnalité: Sessions Persistantes\n\n"
-    welcome_msg += "✅ Votre génération continue même si vous rafraîchissez (F5)\n"
-    welcome_msg += "✅ Reconnexion automatique à vos sessions en cours\n"
+    welcome_msg += "## ✨ Fonctionnalités\n\n"
+    welcome_msg += "✅ Génération continue même après rafraîchissement (⌘+R)\n"
+    welcome_msg += "✅ Reconnexion **automatique** à vos sessions en cours\n"
     welcome_msg += "✅ Reprise exactement où vous étiez\n\n"
     welcome_msg += "---\n\n"
     welcome_msg += "## Backend Status\n\n"
@@ -276,28 +211,6 @@ async def show_welcome_message(health: dict):
     welcome_msg += "💬 Envoyez un message pour démarrer !"
     
     await cl.Message(content=welcome_msg).send()
-
-@app.middleware("http")
-async def add_user_cookie(request, call_next):
-    response: Response = await call_next(request)
-    
-    # Si cookie déjà présent → ne rien toucher
-    if request.cookies.get("user_id"):
-        return response
-    
-    # Sinon → créer cookie persistant 1 an
-    new_user_id = str(uuid.uuid4())
-    response.set_cookie(
-        key="user_id",
-        value=new_user_id,
-        max_age=3600*24*365,  # 1 an
-        path="/",
-        samesite="Lax"
-    )
-    
-    return response
-
-
 
 async def create_chat_settings():
     """Créer les paramètres de chat"""
@@ -349,20 +262,17 @@ async def update_settings(settings):
 async def main(message: cl.Message):
     """Traitement du message"""
     
-    # Récupérer config
     provider = cl.user_session.get("provider", "openai")
     model = cl.user_session.get("model", "gpt-4o")
     temperature = cl.user_session.get("temperature", 0.7)
-    user_id = cl.user_session.get("user_id")
+    user_id = cl.user_session.get("user_id", STABLE_USER_ID)
     
-    # Message de réponse
     msg = cl.Message(content="")
     
     try:
         provider_name = "OpenAI GPT" if provider == "openai" else "Anthropic Claude"
         await msg.stream_token(f"🔄 **{provider_name}** - {model}\n\n")
         
-        # Créer tâche
         task_data = await create_task(
             message.content,
             provider,
@@ -374,10 +284,9 @@ async def main(message: cl.Message):
         task_id = task_data["task_id"]
         
         await msg.stream_token(f"🆔 Task ID: `{task_id}`\n")
-        await msg.stream_token("💡 *Cette session sera récupérable après F5*\n\n")
+        await msg.stream_token("💡 *Vous pouvez rafraîchir (⌘+R), la génération continuera*\n\n")
         await msg.stream_token("---\n\n")
         
-        # Stream
         await stream_from_backend(task_id, msg, 0)
     
     except Exception as e:
