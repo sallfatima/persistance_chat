@@ -85,6 +85,8 @@ class SessionInfo(BaseModel):
     chunks_count: int
     created_at: str
     last_updated: str
+    provider: Optional[str] = "openai"
+    model: Optional[str] = "gpt-4o"
 
 # ==================== STORAGE WITH SESSIONS ====================
 
@@ -173,11 +175,13 @@ class SessionStorage:
                 active_tasks.append(SessionInfo(
                     task_id=state["task_id"],
                     status=status,
-                    prompt=state.get("prompt", "")[:100],
+                    prompt=state.get("prompt", "")[:200],
                     progress=progress,
                     chunks_count=chunks_count,
                     created_at=state.get("created_at", ""),
-                    last_updated=state.get("last_updated", "")
+                    last_updated=state.get("last_updated", ""),
+                    provider=state.get("provider", "openai"),
+                    model=state.get("model", "gpt-4o")
                 ))
             
             except Exception as e:
@@ -186,6 +190,62 @@ class SessionStorage:
         
         active_tasks.sort(key=lambda x: x.last_updated, reverse=True)
         return active_tasks
+    
+    @staticmethod
+    def get_user_all_tasks(user_id: str, limit: int = 10, hours: int = 24) -> List[SessionInfo]:
+        """
+        Récupérer TOUT l'historique d'un utilisateur (actif + terminé)
+        
+        Args:
+            user_id: ID de l'utilisateur
+            limit: Nombre max de tâches à retourner
+            hours: Garder seulement les X dernières heures
+        
+        Returns:
+            Liste de toutes les tâches (running + completed)
+        """
+        all_tasks = []
+        cutoff_time = datetime.now() - timedelta(hours=hours)
+        
+        for state_file in STORAGE_PATH.glob("*_state.json"):
+            try:
+                with open(state_file, 'r') as f:
+                    state = json.load(f)
+                
+                # Vérifier user_id
+                if state.get("user_id") != user_id:
+                    continue
+                
+                # Vérifier l'âge
+                created_at = datetime.fromisoformat(state.get("created_at", "2000-01-01"))
+                if created_at < cutoff_time:
+                    continue
+                
+                # ✅ PAS de filtre sur status (différence clé avec get_user_active_tasks)
+                chunks_count = state.get("chunks_count", 0)
+                progress = min(chunks_count, 100)
+                
+                all_tasks.append(SessionInfo(
+                    task_id=state["task_id"],
+                    status=state.get("status", "unknown"),
+                    prompt=state.get("prompt", "")[:200],
+                    progress=progress,
+                    chunks_count=chunks_count,
+                    created_at=state.get("created_at", ""),
+                    last_updated=state.get("last_updated", ""),
+                    provider=state.get("provider", "openai"),
+                    model=state.get("model", "gpt-4o")
+                ))
+            
+            except Exception as e:
+                print(f"Error reading {state_file}: {e}")
+                continue
+        
+        # Trier par date (plus récent d'abord)
+        all_tasks.sort(key=lambda x: x.created_at, reverse=True)
+        
+        # Limiter
+        return all_tasks[:limit]
     
     @staticmethod
     def cleanup_old_tasks(hours: int = 24):
@@ -410,12 +470,36 @@ async def get_chunks(task_id: str, from_id: int = 0):
 
 @app.get("/api/sessions/{user_id}/active")
 async def get_active_sessions(user_id: str):
-    """Récupérer les tâches actives d'un utilisateur"""
+    """
+    Récupérer les sessions actives d'un utilisateur
+    
+    Retourne SEULEMENT les tâches en cours (running, created)
+    """
     active_tasks = storage.get_user_active_tasks(user_id)
     return {
         "user_id": user_id,
         "active_tasks": [task.dict() for task in active_tasks],
         "count": len(active_tasks)
+    }
+
+@app.get("/api/sessions/{user_id}/history")
+async def get_session_history(user_id: str, limit: int = 10, hours: int = 24):
+    """
+    Récupérer TOUT l'historique d'un utilisateur (actif + terminé)
+    
+    Args:
+        user_id: ID de l'utilisateur
+        limit: Nombre max de tâches (défaut: 10)
+        hours: Dernières X heures (défaut: 24)
+    
+    Returns:
+        Liste complète des tâches (running + completed)
+    """
+    all_tasks = storage.get_user_all_tasks(user_id, limit, hours)
+    return {
+        "user_id": user_id,
+        "tasks": [task.dict() for task in all_tasks],
+        "count": len(all_tasks)
     }
 
 @app.post("/api/sessions/cleanup")
